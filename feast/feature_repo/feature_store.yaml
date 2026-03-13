@@ -1,0 +1,15 @@
+project: pre_delinquency
+registry: data/registry.db
+provider: local
+online_store:
+  type: redis
+  connection_string: "redis:6379"
+offline_store:
+  type: postgres
+  host: postgres
+  port: 5432
+  database: outbox_demo
+  db_schema: public
+  user: postgres
+  password: postgres
+entity_key_serialization_version: 2

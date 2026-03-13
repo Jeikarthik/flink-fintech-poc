@@ -43,11 +43,24 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: outbox_demo
-      # Set wal_level to logical to support logical decoding for Debezium
-#      POSTGRES_INITDB_ARGS: "--wal_level=logical"
     command: ["postgres", "-c", "wal_level=logical"]
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/01-init-db.sql
+
+  # Redis — Feast online store + risk score cache
+  redis:
+    image: redis:7-alpine
+    hostname: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis-data:/data
 
   # Debezium Kafka Connect
   kafka-connect:
@@ -93,6 +106,7 @@ services:
       KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium
       KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-connect:8083
 
+  # Flink JobManager
   jobmanager:
     build:
       context: ./flink
@@ -107,6 +121,7 @@ services:
       timeout: 5s
       retries: 5
 
+  # Flink TaskManager
   taskmanager:
     build:
       context: ./flink
@@ -115,9 +130,92 @@ services:
         condition: service_healthy
     environment:
       - JOB_MANAGER_RPC_ADDRESS=jobmanager
-      - TASK_MANAGER_NUMBER_OF_TASK_SLOTS=2
+      - TASK_MANAGER_NUMBER_OF_TASK_SLOTS=4
     command: taskmanager
+
+  # Apache Spark Master
+  spark-master:
+    image: apache/spark:3.5.3
+    hostname: spark-master
+    ports:
+      - "7077:7077"
+      - "8084:8080"
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    volumes:
+      - ../spark:/opt/spark-jobs
+
+  # Apache Spark Worker
+  spark-worker:
+    image: apache/spark:3.5.3
+    hostname: spark-worker
+    depends_on:
+      - spark-master
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      - SPARK_WORKER_MEMORY=2g
+      - SPARK_WORKER_CORES=2
+    volumes:
+      - ../spark:/opt/spark-jobs
+
+  # Apache Airflow (standalone mode — webserver + scheduler in one)
+  airflow:
+    image: apache/airflow:2.8.1-python3.11
+    hostname: airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8082:8080"
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/outbox_demo
+      AIRFLOW__CORE__FERNET_KEY: 'ZmRlNzg5YjI2OTRmMjk2Y2QzNjI0NTMwN2IzMDhhMDQ='
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+    volumes:
+      - ../airflow/dags:/opt/airflow/dags
+      - ../spark:/opt/spark-jobs
+      - ../feast:/opt/feast
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true &&
+        airflow scheduler &
+        airflow webserver
+
+  # Scoring Service (FastAPI)
+  scoring-service:
+    build:
+      context: ../scoring-service
+    hostname: scoring-service
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: outbox_demo
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      FEAST_REPO_PATH: /opt/feast/feature_repo
+    volumes:
+      - ../feast:/opt/feast
 
 volumes:
   kafka-data:
   postgres-data:
+  redis-data:

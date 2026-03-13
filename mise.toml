@@ -38,6 +38,12 @@ depends = ["flink:jobs:cancel", "flink:build"]
 description = "Run Customer Debezium job that processes CDC events from PostgreSQL via Kafka"
 run = "flink run -c flinkfintechpoc.jobs.CustomerDebeziumJob flink-jobs/target/flink-jobs-1.0-SNAPSHOT.jar"
 
+[tasks."flink:run:feature-engineering"]
+depends = ["flink:jobs:cancel", "flink:build"]
+description = "Run Feature Engineering Job to compute sliding windows and enrich transactions"
+run = "flink run -c flinkfintechpoc.jobs.FeatureEngineeringJob flink-jobs/target/flink-jobs-1.0-SNAPSHOT.jar"
+
+
 [tasks."flink:jobs:cancel"]
 description = "Cancel all currently running Flink jobs"
 run = "flink list -r | grep -Eo '[0-9a-f]{32}' | xargs -n 1 flink cancel"
@@ -48,6 +54,36 @@ run = "cd app && lein run -m flinkfintechpoc.connectors/register-connectors!"
 
 [tasks."simulate"]
 run = "cd app && lein run"
+
+[tasks."simulate:transactions"]
+depends = ["flink:build"]
+description = "Run realistic banking transaction simulator"
+run = "java -cp flink-jobs/target/flink-jobs-1.0-SNAPSHOT.jar flinkfintechpoc.simulator.TransactionSimulatorJob"
+
+[tasks."feast:setup"]
+description = "Install Feast and dependencies locally"
+run = "pip install -r feast/requirements.txt"
+
+[tasks."feast:apply"]
+description = "Apply Feast definitions to the registry"
+run = "cd feast/feature_repo && feast apply"
+
+[tasks."feast:materialize"]
+description = "Trigger Feast materialization from Postgres offline store to Redis online store"
+run = "cd feast/feature_repo && feast materialize-incremental $(date -u +\"%Y-%m-%dT%H:%M:%S\")"
+
+[tasks."spark:batch-features"]
+description = "Run Spark batch feature computation manually"
+run = "docker exec -it spark-master /opt/bitnami/spark/bin/spark-submit --packages org.postgresql:postgresql:42.7.2 /opt/spark-jobs/batch_features.py"
+
+[tasks."scoring:setup"]
+description = "Install Scoring Service dependencies locally"
+run = "pip install -r scoring-service/requirements.txt"
+
+[tasks."scoring:start"]
+description = "Start the FastAPI Scoring Service locally (if not using docker-compose)"
+run = "cd scoring-service && uvicorn main:app --reload --port 8000"
+
 
 [tasks."postgres:connect"]
 description = "Connect to PostgreSQL database (outbox_demo) using interactive psql client"
